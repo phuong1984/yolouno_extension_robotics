@@ -28,6 +28,7 @@ MODE_MECANUM = const(2)
 # stop method
 STOP = const(0)
 BRAKE = const(1)
+BRAKE_NOW = const(2)
 
 # move unit
 SECOND = const(0)

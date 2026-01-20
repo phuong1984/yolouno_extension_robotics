@@ -375,6 +375,48 @@ Blockly.Python["robotics_motori2c_init"] = function (block) {
   return code;
 };
 
+Blockly.Blocks['robotics_motor_set_dead_band'] = {
+  init: function () {
+    this.jsonInit(
+      {
+        "type": "robotics_motor_set_dead_band",
+        "message0": Blockly.Msg.ROBOTICS_I2C_MOTOR_SET_DEAD_BAND,
+        "args0": [
+          {
+            "type": "field_dropdown",
+            "name": "motor",
+            "options": robotics_motors,
+          },
+          {
+            min: 0,
+            type: "input_value",
+            check: "Number",
+            value: 20,
+            name: "dead_band",
+          }
+        ],
+        "inputsInline": true,
+        "previousStatement": null,
+        "nextStatement": null,
+        "colour": roboticsMotorBlockColor,
+        "tooltip": "",
+        "helpUrl": ""
+      }
+    );
+  }
+};
+
+
+Blockly.Python["robotics_motor_set_dead_band"] = function (block) {
+  var motor = block.getFieldValue("motor");
+  var dead_band = Blockly.Python.valueToCode(block, 'dead_band', Blockly.Python.ORDER_ATOMIC);
+  // TODO: Assemble Python into code variable.
+  var code = motor + ".set_dead_band(" + dead_band + ")\n";
+
+  return code;
+};
+
+
 Blockly.Blocks['robotics_motor_run'] = {
   init: function () {
     this.jsonInit(
@@ -1657,13 +1699,25 @@ Blockly.Blocks['robotics_robot_set_speed_ratio'] = {
             type: "input_value",
             check: "Number",
             value: 1,
-            name: "left",
+            name: "front_left",
           },
           {
             type: "input_value",
             check: "Number",
             value: 1,
-            name: "right",
+            name: "front_right",
+          },
+          {
+            type: "input_value",
+            check: "Number",
+            value: 1,
+            name: "rear_left",
+          },
+          {
+            type: "input_value",
+            check: "Number",
+            value: 1,
+            name: "rear_right",
           },
         ],
         "inputsInline": true,
@@ -1678,12 +1732,17 @@ Blockly.Blocks['robotics_robot_set_speed_ratio'] = {
 };
 
 Blockly.Python["robotics_robot_set_speed_ratio"] = function (block) {
-  var left = Blockly.Python.valueToCode(block, 'left', Blockly.Python.ORDER_ATOMIC);
-  var right = Blockly.Python.valueToCode(block, 'right', Blockly.Python.ORDER_ATOMIC);
+  var front_left = Blockly.Python.valueToCode(block, 'front_left', Blockly.Python.ORDER_ATOMIC);
+  var front_right = Blockly.Python.valueToCode(block, 'front_right', Blockly.Python.ORDER_ATOMIC);
+  var rear_left = Blockly.Python.valueToCode(block, 'rear_left', Blockly.Python.ORDER_ATOMIC);
+  var rear_right = Blockly.Python.valueToCode(block, 'rear_right', Blockly.Python.ORDER_ATOMIC);
   // TODO: Assemble Python into code variable.
-  var code = "robot.speed_ratio(left=" + left + ", right=" + right + ")\n";
+  var code = "robot.speed_ratio(front_left=" + front_left + ", front_right=" + front_right + ", rear_left=" + rear_left + ", rear_right=" + rear_right + ")\n";
   return code;
 };
+
+
+
 
 // REMOTE CONTROL BLOCK
 

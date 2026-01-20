@@ -1,4 +1,4 @@
-from time import ticks_ms
+from time import ticks_ms, ticks_diff
 import asyncio, math
 from ble import *
 from utility import *
@@ -9,6 +9,21 @@ from motor import *
 from line_sensor import *
 from gamepad import *
 from pid import PIDController
+
+
+LONG_DISTANCE_CM = 29
+LONG_DISTANCE_SECOND = 0.49
+LONG_DISTANCE_DEGREE = 29
+TARGET_PERCENT = 0.95
+
+counter_brake = 0
+
+
+
+list_debug_speed = []
+list_debug_driven = []
+
+
 
 class DriveBase:
     def __init__(self, drive_mode, m1, m2, m3=None, m4=None):
@@ -106,7 +121,8 @@ class DriveBase:
         # PID related settings
         self._pid = PIDController(5, 0.15, 0.1, setpoint=0, sample_time=None, output_limits=(-10, 10))
 
-        self._speed_ratio = (1, 1)
+        self._speed_ratio = (1, 1, 1, 1)
+        self._distance_accel = 0.0
 
     ######################## Configuration #####################
 
@@ -117,7 +133,9 @@ class DriveBase:
              speed (Number) - Default speed used to move, 0 to 100.
     '''
     def speed(self, speed=None, min_speed=None):
-        if speed == None and min_speed == None:
+        if speed < 0 or min_speed < 0:
+            raise Exception("Invalid robot config value")
+        elif speed == None and min_speed == None:
             return self._speed
         else:
             self._speed = speed
@@ -175,8 +193,9 @@ class DriveBase:
         Parameters:
 
     '''
-    def speed_ratio(self, left, right):
-        self._speed_ratio = (left, right)
+    def speed_ratio(self, front_left, front_right, rear_left, rear_right):
+        self._speed_ratio = (front_left, front_right, rear_left, rear_right)
+        
 
     ######################## Driving functions #####################
 
@@ -212,33 +231,7 @@ class DriveBase:
             self.run(DIR_SL)
 
     async def move_left_for(self, amount, unit=SECOND, then=STOP):
-        if self._drive_mode != MODE_MECANUM:
-            await self.turn_left_for(amount, unit, then)
-            return
-
-        else:
-            if unit != SECOND:
-                return
-            # only support SECOND unit
-            distance = abs(abs(amount*1000)) # to ms
-            driven = 0
-            last_driven = 0
-            time_start = ticks_ms()
-
-            while True:
-                driven = ticks_ms() - time_start                
-
-                if driven > distance:
-                    break
-
-                # speed smoothing and go straight
-                adjusted_speed = self._calc_speed(abs(self._speed), distance, driven, last_driven)
-                self.run(DIR_SL, adjusted_speed)
-
-                last_driven = driven
-                await asyncio.sleep_ms(10)
-
-            await self.stop_then(then)
+        await self.move_slide(amount, unit, then, DIR_SL)
 
     def move_right(self):
         if self._drive_mode != MODE_MECANUM:
@@ -248,32 +241,68 @@ class DriveBase:
             self.run(DIR_SR)
     
     async def move_right_for(self, amount, unit=SECOND, then=STOP):
+        await self.move_slide(amount, unit, then, DIR_SR)
+        
+    async def move_slide(self, amount, unit=SECOND, then=STOP, dir_slide=DIR_SL):
+        global list_debug_speed, list_debug_driven, counter_brake
         if self._drive_mode != MODE_MECANUM:
-            await self.turn_right_for(amount, unit, then)
+            if dir_slide == DIR_SL:
+                await self.turn_left_for(amount, unit, then)
+            else:
+                await self.turn_right_for(amount, unit, then)
             return
-
-        if unit != SECOND:
-            return
-        # only support SECOND unit
-        distance = abs(abs(amount*1000)) # to ms
+        # mecanum mode
+        adjusted_speed = self._min_speed
+        is_long_distance = False
         driven = 0
-        last_driven = 0
-        time_start = ticks_ms()
-
-        while True:
-            driven = ticks_ms() - time_start                
-
-            if driven > distance:
-                break
-
-            # speed smoothing and go straight
-            adjusted_speed = self._calc_speed(abs(self._speed), distance, driven, last_driven)
-            self.run(DIR_SR, adjusted_speed)
-
-            last_driven = driven
-            await asyncio.sleep_ms(10)
-
+        amount = abs(amount)
+        counter_brake = 0
+        
+        if unit == SECOND:
+            distance = amount * 1000 # to ms
+            if amount > LONG_DISTANCE_SECOND: # long enough distance
+                is_long_distance = True
+                self._calc_distance_accel_decel(unit) 
+            
+            time_start = ticks_ms()            
+            while True:
+                time_next = ticks_ms()
+                driven = ticks_diff(time_next, time_start)
+                if driven >= distance:
+                    break
+                if is_long_distance == True:
+                    adjusted_speed = self._calc_speed(driven)
+                self.run(dir_slide, adjusted_speed)
+                await asyncio.sleep_ms(5)                
+        else: # cm
+            await self.reset_angle()            
+            distance = amount * 10 # to mm
+            distance = (distance/self._wheel_circ)*1.414*self._ticks_per_rev*TARGET_PERCENT # to encoder ticks [1.414 = 1/cos(45) - roller is at 45 degree]
+            distance_braking = distance - self._ticks_per_rev
+            if amount > LONG_DISTANCE_CM: # long enough distance
+                is_long_distance = True
+                self._calc_distance_accel_decel(unit)
+                
+            while True:
+                driven = int((abs(self.left_encoder.encoder_ticks()) + abs(self.right_encoder.encoder_ticks())) / 2)
+                list_debug_driven.append(driven)
+                if driven >= distance:                    
+                    break
+                elif driven >= distance_braking:
+                    counter_brake += 1
+                    if counter_brake % 2 == 0:
+                        await self.stop_then(BRAKE_NOW)
+                        continue
+                if is_long_distance == True:
+                    adjusted_speed = self._calc_speed(driven)
+                self.run(dir_slide, adjusted_speed)
+                await asyncio.sleep_ms(5)
         await self.stop_then(then)
+        print(f"driven distance slide: {driven} / {distance}")
+        #print(list_debug_speed)
+        list_debug_speed = []
+        print(list_debug_driven)
+        list_debug_driven = []
 
     '''
         Drives straight for a given distance and then stops.
@@ -288,53 +317,70 @@ class DriveBase:
             unit - can be CM, INCH, or SECOND
     '''
     async def straight(self, speed, amount, unit=SECOND, then=STOP):
-        await self.reset_angle()
-        # calculate target 
-        distance = 0
-        driven = 0
-        last_driven = 0
-        expected_speed = 0
-
+        global list_debug_speed, list_debug_driven, counter_brake
+        counter_brake = 0
         # apply pid
-        self._pid.reset()
-
-        if unit == CM:
-            distance = abs(int(amount*10)) # to mm
-        elif unit == INCH:
-            distance = abs(int(amount*25.4)) # to mm
-        elif unit == SECOND:
-            distance = abs(abs(amount*1000)) # to ms
-            time_start = ticks_ms()
-
+        #self._pid.reset()
+        await self.reset_angle()
+        # calculate target
+        is_long_distance = False
+        driven = 0
+        amount = abs(amount)        
         speed_dir = speed/(abs(speed)) # direction
-
-        while True:
-            if unit == SECOND:
-                driven = ticks_ms() - time_start                
-            else:
-                driven = abs(self.distance())
-
-            #print(driven, distance)
+        adjusted_speed = self._min_speed * speed_dir
+        
+        if unit == SECOND:
+            distance = amount * 1000 # to ms            
+            if amount > LONG_DISTANCE_SECOND: # long enough distance
+                is_long_distance = True
+                self._calc_distance_accel_decel(unit)
+                
+            time_start = ticks_ms()
+            while True:
+                time_next = ticks_ms()
+                driven = ticks_diff(time_next, time_start)
+                if driven >= distance:
+                    break
+                if is_long_distance == True:
+                    adjusted_speed = speed_dir*self._calc_speed(driven)
+                # adjust left and right speed to go straight
+                left_speed, right_speed = self._calib_speed(adjusted_speed)
+                self.run_speed(left_speed, right_speed)            
+                await asyncio.sleep_ms(5)
+        else: # unit == CM:
+            distance = amount * 10 # to mm
+            distance = int((distance/self._wheel_circ)*self._ticks_per_rev*TARGET_PERCENT) # to encoder ticks
+            distance_braking = distance - self._ticks_per_rev
+            if amount > LONG_DISTANCE_CM: # long enough distance
+                is_long_distance = True
+                self._calc_distance_accel_decel(unit)
             
-            if driven >= distance:
-                break
-            
-            if (unit == SECOND and amount < 2) or (unit == CM and amount < 10) or (unit == INCH and amount < 4):
-                expected_speed = speed
-            else:
-                # speed smoothing using accel and deccel technique when distance is long enough
-                expected_speed = speed_dir*self._calc_speed(abs(speed), distance, driven, last_driven)
-
-            # adjust left and right speed to go straight
-            left_speed, right_speed = self._calib_speed(expected_speed)
-
-            self.run_speed(left_speed, right_speed)
-
-            last_driven = driven
-            
-            await asyncio.sleep_ms(5)
-
+            while True:
+                driven = int((abs(self.left_encoder.encoder_ticks()) + abs(self.right_encoder.encoder_ticks())) / 2)
+                speed_now = int((abs(self.left_encoder.speed()) + abs(self.right_encoder.speed())) / 2)
+                list_debug_speed.append(speed_now)
+                list_debug_driven.append(driven)
+                
+                if driven >= distance:                    
+                    break
+                elif driven >= distance_braking:
+                    counter_brake += 1
+                    if counter_brake % 2 == 0:
+                        await self.stop_then(BRAKE_NOW)
+                        continue
+                if is_long_distance == True:
+                    adjusted_speed = speed_dir*self._calc_speed(driven)
+                # adjust left and right speed to go straight
+                left_speed, right_speed = self._calib_speed(adjusted_speed)
+                self.run_speed(left_speed, right_speed)            
+                await asyncio.sleep_ms(5)
+        
         await self.stop_then(then)
+        print(f"driven distance straight: {driven} / {distance}")
+        #print(list_debug_speed)
+        list_debug_speed = []
+        print(list_debug_driven)
+        list_debug_driven = []
 
     '''
         Turns in place by a given angle and then stops.
@@ -351,27 +397,27 @@ class DriveBase:
             unit - UNIT_DEGREE or UNIT_SECOND
     '''
     async def turn(self, steering, amount=None, unit=SECOND, then=STOP):
-        speed = self._speed
-
+        global list_debug_speed, list_debug_driven, counter_brake
         if not amount:
-            left_speed, right_speed = self._calc_steering(speed, steering)
+            left_speed, right_speed = self._calc_steering(self._speed, steering)
             self.run_speed(left_speed, right_speed)
             return
-
-        # calculate distance
-        distance = 0
-        driven_distance = 0
-        last_driven = 0
+        if unit == DEGREE and self._use_gyro and self._angle_sensor == None:
+            raise Exception("MPU is not initialised")
+        # calculate target 
+        adjusted_speed = self._min_speed
+        is_long_distance = False
+        driven = 0
+        amount = abs(amount)
+        counter_brake = 0
 
         if unit == DEGREE:
+            await self.reset_angle()
+            wheel_circ_degree = self._wheel_circ/360            
             if self._use_gyro: # use angle sensor
-                if self._angle_sensor == None: # no angle sensor
-                    return
-
-                distance = amount
-
-                if abs(distance) > 359:
-                    distance = 359
+                if amount > 359:
+                    amount = 359
+                distance = amount - 2 # less than amout to compensate inertia momentum
             else: # use encoders
                 # Arc length is computed accordingly.
                 # arc_length = (10 * abs(angle) * radius) / 573
@@ -379,52 +425,56 @@ class DriveBase:
                 distance = abs(( math.pi * (radius+self._width/2)*2 ) * (amount / 360 ))
                 #print('arc length: ', distance)
                 # reference link: https://subscription.packtpub.com/book/iot-and-hardware/9781789340747/12/ch12lvl1sec11/making-a-specific-turn
-            await self.reset_angle()
-
-        elif unit == SECOND:
-            distance = abs(amount*1000) # to ms
-            time_start = ticks_ms()
-
-        #print(left_speed, right_speed)
-
-        wheel_circ_degree = self._wheel_circ/360
-
-        while True:
-            driven_distance = 0
-            if unit == SECOND:
-                driven_distance = ticks_ms() - time_start
-            elif unit == DEGREE:
+            if amount > LONG_DISTANCE_DEGREE:
+                is_long_distance = True
+                self._calc_distance_accel_decel(unit)
+            distance_braking = distance - 20
+            while True:
                 if self._use_gyro: # use angle sensor
-                    if self._angle_sensor != None:
-                        driven_distance = abs(self._angle_sensor.heading)
-                    else:
-                        driven_distance = 0
+                    driven = abs(self._angle_sensor.heading)
+                    list_debug_driven.append(driven)
+                    if driven >= distance:
+                        break
+                    elif driven >= distance_braking:
+                        counter_brake += 1
+                        if counter_brake % 2 == 0:
+                            await self.stop_then(BRAKE_NOW)
+                            continue
                 else: # use encoder
                     if steering > 0:
-                        driven_distance = abs(self.left_encoder.angle())*wheel_circ_degree
+                        driven = abs(self.left_encoder.angle())*wheel_circ_degree
                     else:
-                        driven_distance = abs(self.right_encoder.angle())*wheel_circ_degree
-
-            #print(driven_distance)
-            if (unit == SECOND and amount < 1) or (unit == DEGREE and amount < 45):
-                expected_speed = speed
-            else:
-                # speed smoothing using accel and deccel technique when distance is long enough
-                expected_speed = self._calc_speed(speed, distance, driven_distance, last_driven)
-
-            left_speed, right_speed = self._calc_steering(expected_speed, steering)
-            #print(expected_speed, left_speed, right_speed)
-
-            self.run_speed(left_speed, right_speed)
-
-            last_driven = driven_distance
-
-            if driven_distance >= distance:
-                break
-
-            await asyncio.sleep_ms(5)
-        
+                        driven = abs(self.right_encoder.angle())*wheel_circ_degree
+                    if driven >= distance:
+                        break                
+                if is_long_distance == True:
+                    adjusted_speed = self._calc_speed(driven)
+                left_speed, right_speed = self._calc_steering(adjusted_speed, steering)
+                self.run_speed(left_speed, right_speed)
+                await asyncio.sleep_ms(5)
+        elif unit == SECOND:            
+            distance = amount * 1000 # to ms
+            if amount > LONG_DISTANCE_SECOND:
+                is_long_distance = True
+                self._calc_distance_accel_decel(unit)
+                
+            time_start = ticks_ms()
+            while True:
+                time_next = ticks_ms()
+                driven = ticks_diff(time_next, time_start)
+                if driven >= distance:
+                    break
+                if is_long_distance == True:
+                    adjusted_speed = self._calc_speed(driven)
+                left_speed, right_speed = self._calc_steering(adjusted_speed, steering)
+                self.run_speed(left_speed, right_speed)
+                await asyncio.sleep_ms(5)
         await self.stop_then(then)
+        print(f"driven distance turn: {driven} / {distance}")
+        #print(list_debug_speed)
+        list_debug_speed = []
+        print(list_debug_driven)
+        list_debug_driven = []
 
     ######################## Drive forever #####################
 
@@ -457,8 +507,8 @@ class DriveBase:
         if self._drive_mode == MODE_MECANUM:
             self.m1.run(speed*self._mecanum_speed_factor[dir][0]*self._speed_ratio[0])
             self.m2.run(speed*self._mecanum_speed_factor[dir][1]*self._speed_ratio[1])
-            self.m3.run(speed*self._mecanum_speed_factor[dir][2]*self._speed_ratio[0])
-            self.m4.run(speed*self._mecanum_speed_factor[dir][3]*self._speed_ratio[1])
+            self.m3.run(speed*self._mecanum_speed_factor[dir][2]*self._speed_ratio[2])
+            self.m4.run(speed*self._mecanum_speed_factor[dir][3]*self._speed_ratio[3])
             return
         else:
             if dir == DIR_FW:
@@ -501,11 +551,9 @@ class DriveBase:
     def run_speed(self, left_speed, right_speed=None):
         if right_speed == None:
             right_speed = left_speed
-
         for i in range(len(self.left)):
-            self.left[i].run(int(left_speed*self._speed_ratio[0]))
-            self.right[i].run(int(right_speed*self._speed_ratio[1]))
-
+            self.left[i].run(int(left_speed*self._speed_ratio[i*2]))
+            self.right[i].run(int(right_speed*self._speed_ratio[i*2+1]))
 
     ######################## Stop functions #####################
     
@@ -534,6 +582,9 @@ class DriveBase:
             self.stop()
         elif then == STOP:
             self.stop()
+        elif then == BRAKE_NOW:            
+            self.brake()            
+            await asyncio.sleep_ms(5)
         else:
             return
 
@@ -548,9 +599,10 @@ class DriveBase:
     def distance(self):
         if self.left_encoder and self.right_encoder:
             #print(self.left_encoder.angle(), self.right_encoder.angle())
-            angle = (abs(self.left_encoder.angle()) + abs(self.right_encoder.angle()))/2
-            distance = (angle * self._wheel_circ) / 360
-
+            left_encoder_angle = abs(self.left_encoder.angle())
+            right_encoder_angle = abs(self.right_encoder.angle())                         
+            angle = (left_encoder_angle + right_encoder_angle)/2
+            distance = (angle * self._wheel_circ) / 360            
             return distance
         else:
             return 0
@@ -695,6 +747,17 @@ class DriveBase:
 
     ######################## Utility functions #####################
 
+    def _calc_distance_accel_decel(self, unit):
+        if unit == CM:
+            self._distance_accel = int(self._ticks_per_rev / 4) # encoder ticks            
+        elif unit == SECOND:
+            self._distance_accel = 300 # ms
+        elif unit == DEGREE:
+            if self._use_gyro:
+                self._distance_accel = 30 # degree
+            else: # use encoder
+                self._distance_accel = int(self._ticks_per_rev / 4) # encoder ticks
+        
     '''
         Used to calculate all the speeds in our programs. Brakes and accelerates
 
@@ -706,26 +769,19 @@ class DriveBase:
             add_speed: Percentage of the distance after which the robot reaches the maximum speed. Type: Integer. Default: No default value.
             brakeStartValue: Percentage of the driven distance after which the robot starts braking. Type: Integer. Default: No default value.
             drivenDistance: Calculation of the driven distance in degrees. Type: Integer. Default: No default value.
-    '''
-    def _calc_speed(self, speed, distance, driven_distance, last_driven):
-        start_speed = self._min_speed
-
-        max_speed = speed
-        end_speed = start_speed
-        accel_distance = 0.3*distance
-        decel_distance = 0.7*distance
-
-        if driven_distance == 0:
-            return start_speed
-        elif abs(driven_distance) < abs(accel_distance):
-            return int(start_speed + (max_speed - start_speed) * driven_distance / accel_distance)
-        elif abs(driven_distance) > abs(decel_distance):
-            return int(max_speed - (max_speed - end_speed) * (driven_distance-decel_distance) / (distance-decel_distance))
-        else:
-            return speed
+    '''       
+    def _calc_speed(self, driven):
+        global list_debug_speed
+        calculated_speed = self._speed
+        driven_distance = abs(driven)
+        
+        if driven_distance < self._distance_accel:
+            calculated_speed = int(self._min_speed + (self._speed - self._min_speed) * driven_distance / self._distance_accel)
+        #list_debug_speed.append(calculated_speed)
+        return calculated_speed
     
     def _calib_speed(self, speed):
-
+        return (speed, speed) # do not use PID, so return -> fix later if using PID
         if self._use_gyro:
             if self._angle_sensor != None:
                 angle_error = self._angle_sensor.heading

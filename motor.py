@@ -19,6 +19,7 @@ class DCMotor:
         self.ticks_per_rev = 0 # encoder ticks count per revolution
         self._max_pps = 0 # max count pulses per second
 
+        self._dead_band = 0
         # stalled config
         self._stalled_speed = 0.05 # < 5% of max speed considered stalled
         self._stalled_time = 1000 # 1 seconds
@@ -64,8 +65,21 @@ class DCMotor:
             speed (Number, %) - Speed of the motor to run.
 
     '''
+    def set_dead_band(self, value):
+        self._dead_band = value
+        
+    def _map_speed(self, speed, in_min = 0, in_max = 100, out_min = 0, out_max = 100):
+        return int((speed - in_min) * (out_max - out_min) / (in_max - in_min) + out_min)
+        
     def run(self, speed):
         speed = max(min(100, int(speed)),-100)
+        temp = 1
+        if speed < 0:
+            temp = -1
+            speed = abs(speed)
+        speed = self._map_speed(speed, out_min = self._dead_band)
+        if temp < 0:
+            speed = speed * temp
         self.driver.set_motors(self.port, speed*self._reversed)
 
     '''

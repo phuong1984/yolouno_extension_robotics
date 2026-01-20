@@ -20,6 +20,15 @@
           </shadow>
         </value>
       </block>
+      
+      <block type="robotics_motor_set_dead_band">
+        <value name="dead_band">
+          <shadow type="math_number">
+            <field name="NUM">20</field>
+          </shadow>
+        </value>
+      </block>
+      
       <block type="robotics_motor_run">
         <value name="speed">
           <shadow type="math_number">
@@ -151,17 +160,27 @@
       <block type="robotics_robot_use_gyro" />
 
       <block type="robotics_robot_set_speed_ratio" >
-        <value name="left">
+        <value name="front_left">
           <shadow type="math_number">
             <field name="NUM">1</field>
           </shadow>
         </value>
-        <value name="right">
+        <value name="front_right">
           <shadow type="math_number">
             <field name="NUM">1</field>
           </shadow>
         </value>
-      </block>
+        <value name="rear_left">
+          <shadow type="math_number">
+            <field name="NUM">1</field>
+          </shadow>
+        </value>
+        <value name="rear_right">
+          <shadow type="math_number">
+            <field name="NUM">1</field>
+          </shadow>
+        </value>
+      </block>     
       
       <block type="robotics_robot_set_pid" >
         <value name="KP">
